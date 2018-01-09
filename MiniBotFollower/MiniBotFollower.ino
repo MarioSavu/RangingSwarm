@@ -18,6 +18,12 @@ const uint8_t PIN_SS = SS; // spi select pin
 
 #define START_DELAY 2 // in seconds
 
+#define STOP      0
+#define FORWARD   1
+#define BACKWARD  2
+#define LEFT      3
+#define RIGHT     4
+
 int precision = 2;
 int incomingData = 0; //variabila de tip integer în care se memoriază caracterul recepţionat pe Bluetooth
 byte incomingAngle = 0;
@@ -30,8 +36,17 @@ int desiredAngle = 0;
 int turnFlag = 0;
 int printMe;
 
-float globalDistanceVar = 0;
+float distanceTarget = 1.5;
+float movingDistanceLimit = 0.7;
+
+float globalDistanceTrigger = 0;
+float globalDistanceAvg = 0;
+float globalDistanceCheck[5];
+unsigned char globalDistanceIt = 0;
 unsigned long lastUpdate = 0;
+unsigned long globalTimeTrigger = 0;
+unsigned long distanceTimeout;
+unsigned char movingDir = 0;
 
 void setup()
 {
@@ -66,11 +81,36 @@ void setup()
 
 void loop() {
   DW1000Ranging.loop();
-  
-  if(globalDistanceVar > 0.9 && (millis() - lastUpdate < 250)) {
-    motorDrive(3);
+  // Calculate distance average from last 5 samples as the distance can be a bit noisy
+  globalDistanceAvg = (globalDistanceCheck[0] + globalDistanceCheck[1] + globalDistanceCheck[2] + globalDistanceCheck[3] + globalDistanceCheck[4]) / 5;
+
+  // Check if we're too far from our target and if the last sample is recent (the target did not disconnect)
+  if(globalDistanceAvg > distanceTarget && (millis() - lastUpdate < 250)) {
+    if(globalDistanceTrigger == 0) { // If this just happened, log the starting distance
+      globalDistanceTrigger = globalDistanceAvg;
+      globalTimeTrigger = millis(); // Start counting how long you'll be moving forward
+      // Start moving forward, go back, do a 90 degree right turn, then move forward again
+      motorDrive(FORWARD);
+    }
+    else { // If we were already moving back
+      if((globalDistanceAvg - globalDistanceTrigger) > movingDistanceLimit ) { // Check if we strayed too far from the starting distance
+        // Move back as long as you moved forward, then possibly change the direction
+        brake();
+        motorDrive(BACKWARD);
+        // TODO: made this move backwards until you get back to the original distance (using the current globalDistanceAvg)
+        delay(millis() - globalTimeTrigger); // This is the way you know how long to move backwards
+        motorDrive(RIGHT); // TODO: add the gyroscope back to do an exact 90 degree turn
+        delay(600); // current timing aproximation for a 90 degree turn
+        motorDrive(FORWARD);
+        globalTimeTrigger = millis(); // Update the start time
+      }
+      else {
+        // Continue moving
+      }
+    }
   }
   else {
+    globalDistanceTrigger = 0;
     brake();
   }
 }
@@ -79,8 +119,11 @@ void newRange() {
   Serial.print("from: "); Serial.print(DW1000Ranging.getDistantDevice()->getShortAddress(), HEX);
   Serial.print("\t Range: "); Serial.print(DW1000Ranging.getDistantDevice()->getRange()); Serial.print(" m");
   Serial.print("\t RX power: "); Serial.print(DW1000Ranging.getDistantDevice()->getRXPower()); Serial.println(" dBm");
-  globalDistanceVar = DW1000Ranging.getDistantDevice()->getRange();
   lastUpdate = millis();
+  globalDistanceCheck[globalDistanceIt++] = DW1000Ranging.getDistantDevice()->getRange();
+  if(globalDistanceIt > 4) {
+    globalDistanceIt = 0;
+  }
 }
 
 void newDevice(DW1000Device* device) {
